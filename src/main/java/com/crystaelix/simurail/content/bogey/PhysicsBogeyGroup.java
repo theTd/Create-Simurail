@@ -4,6 +4,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.SequencedSet;
 
+import com.crystaelix.simurail.api.util.ChunkAvailability;
 import com.simibubi.create.content.trains.entity.TravellingPoint;
 import com.simibubi.create.content.trains.graph.TrackGraph;
 
@@ -186,12 +187,13 @@ public class PhysicsBogeyGroup {
 	static ObjectBooleanPair<PhysicsBogeyBlockEntity> nextBogey(PhysicsBogeyBlockEntity bogey, boolean front) {
 		Level level = bogey.getLevel();
 		if(front) {
-			if(bogey.connectionFront != null && level.getBlockEntity(bogey.connectionFront) instanceof PhysicsBogeyBlockEntity next) {
+			// Never block a physics tick on a chunk load: an unloaded link simply ends the chain this rebuild
+			if(bogey.connectionFront != null && ChunkAvailability.isChunkLoaded(level, bogey.connectionFront) && level.getBlockEntity(bogey.connectionFront) instanceof PhysicsBogeyBlockEntity next) {
 				return ObjectBooleanPair.of(next, bogey.connectionFrontToFront);
 			}
 		}
 		else {
-			if(bogey.connectionBack != null && level.getBlockEntity(bogey.connectionBack) instanceof PhysicsBogeyBlockEntity next) {
+			if(bogey.connectionBack != null && ChunkAvailability.isChunkLoaded(level, bogey.connectionBack) && level.getBlockEntity(bogey.connectionBack) instanceof PhysicsBogeyBlockEntity next) {
 				return ObjectBooleanPair.of(next, bogey.connectionBackToFront);
 			}
 		}

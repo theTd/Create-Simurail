@@ -17,6 +17,7 @@ import org.joml.Vector3d;
 import org.joml.Vector3dc;
 import org.joml.Vector3f;
 
+import com.crystaelix.simurail.Simurail;
 import com.crystaelix.simurail.api.math.Basis3d;
 import com.crystaelix.simurail.api.math.Basis3dc;
 import com.crystaelix.simurail.api.math.MovingQuaternionfLerp;
@@ -24,6 +25,7 @@ import com.crystaelix.simurail.api.math.MovingVector3fLerp;
 import com.crystaelix.simurail.api.math.SimurailMath;
 import com.crystaelix.simurail.api.physics.AttachableBoxPhysicsObject;
 import com.crystaelix.simurail.api.physics.SimurailJoints;
+import com.crystaelix.simurail.api.util.ChunkAvailability;
 import com.crystaelix.simurail.api.util.PhysicsStaffUtil;
 import com.crystaelix.simurail.api.util.SchematicContextUtil;
 import com.crystaelix.simurail.compat.SimurailCompat;
@@ -131,6 +133,7 @@ public class PhysicsBogeyBlockEntity extends KineticBlockEntity implements Namea
 	public double slipSpeed = 0;
 	protected double lastSlipSpeed = 0;
 	protected boolean staffRestrained = false;
+	protected boolean nanPivotLogged = false;
 	protected final LerpedFloat lerpedCurvature = LerpedFloat.linear();
 
 	// Navigator components
@@ -330,14 +333,14 @@ public class PhysicsBogeyBlockEntity extends KineticBlockEntity implements Namea
 	@Override
 	public void disconnect(boolean front) {
 		if(front) {
-			if(connectionFront != null && level.getBlockEntity(connectionFront) instanceof PhysicsBogeyBlockEntity otherBogey) {
+			if(connectionFront != null && ChunkAvailability.isChunkLoaded(level, connectionFront) && level.getBlockEntity(connectionFront) instanceof PhysicsBogeyBlockEntity otherBogey) {
 				otherBogey.propagateDisconnect(connectionFrontToFront);
 			}
 			connectionFront = null;
 			connectionFrontSubLevelID = null;
 		}
 		else {
-			if(connectionBack != null && level.getBlockEntity(connectionBack) instanceof PhysicsBogeyBlockEntity otherBogey) {
+			if(connectionBack != null && ChunkAvailability.isChunkLoaded(level, connectionBack) && level.getBlockEntity(connectionBack) instanceof PhysicsBogeyBlockEntity otherBogey) {
 				otherBogey.propagateDisconnect(connectionBackToFront);
 			}
 			connectionBack = null;
@@ -426,12 +429,12 @@ public class PhysicsBogeyBlockEntity extends KineticBlockEntity implements Namea
 
 	public PhysicsBogeyBlockEntity getConnected(boolean front) {
 		if(front) {
-			if(connectionFront != null && level.getBlockEntity(connectionFront) instanceof PhysicsBogeyBlockEntity other) {
+			if(connectionFront != null && ChunkAvailability.isChunkLoaded(level, connectionFront) && level.getBlockEntity(connectionFront) instanceof PhysicsBogeyBlockEntity other) {
 				return other;
 			}
 		}
 		else {
-			if(connectionBack != null && level.getBlockEntity(connectionBack) instanceof PhysicsBogeyBlockEntity other) {
+			if(connectionBack != null && ChunkAvailability.isChunkLoaded(level, connectionBack) && level.getBlockEntity(connectionBack) instanceof PhysicsBogeyBlockEntity other) {
 				return other;
 			}
 		}
@@ -575,6 +578,39 @@ public class PhysicsBogeyBlockEntity extends KineticBlockEntity implements Namea
 		}
 	}
 
+	// Rebuilds the pivot body and its two joints without touching axle state; used when the pivot's
+	// rapier body went NaN (its old joints die with the removed body and are recreated by createPivot)
+	protected void recreatePivot(ServerSubLevel subLevel) {
+		axleFront.removeJoint();
+		axleBack.removeJoint();
+		if(pivotJoint != null) {
+			pivotJoint.remove();
+			pivotJoint = null;
+		}
+		if(motorJoint != null) {
+			motorJoint.remove();
+			motorJoint = null;
+		}
+		if(pivot != null) {
+			SubLevelPhysicsSystem physics = SubLevelContainer.getContainer(subLevel.getLevel()).physicsSystem();
+			physics.removeObject(pivot);
+			pivot = null;
+		}
+		createPivot(subLevel);
+	}
+
+	protected static boolean isFinite(Pose3dc pose) {
+		return isFinite(pose.position()) && isFinite(pose.orientation());
+	}
+
+	protected static boolean isFinite(Vector3dc vec) {
+		return Double.isFinite(vec.x()) && Double.isFinite(vec.y()) && Double.isFinite(vec.z());
+	}
+
+	protected static boolean isFinite(Quaterniondc quat) {
+		return Double.isFinite(quat.x()) && Double.isFinite(quat.y()) && Double.isFinite(quat.z()) && Double.isFinite(quat.w());
+	}
+
 	@Override
 	public void tick() {
 		init();
@@ -653,7 +689,8 @@ public class PhysicsBogeyBlockEntity extends KineticBlockEntity implements Namea
 			}
 
 			double maxDist = SimurailConfig.server().blocks.connectionBogeyRangeDifferent.get();
-			if(connectionFront != null) {
+			// An unloaded connection chunk is unverifiable, not broken: keep the connection and recheck later
+			if(connectionFront != null && ChunkAvailability.isChunkLoaded(level, connectionFront)) {
 				if(level.getBlockEntity(connectionFront) instanceof PhysicsBogeyBlockEntity other) {
 					SubLevel selfSubLevel = Sable.HELPER.getContaining(this);
 					SubLevel otherSubLevel = Sable.HELPER.getContaining(other);
@@ -668,7 +705,7 @@ public class PhysicsBogeyBlockEntity extends KineticBlockEntity implements Namea
 					disconnect(true);
 				}
 			}
-			if(connectionBack != null) {
+			if(connectionBack != null && ChunkAvailability.isChunkLoaded(level, connectionBack)) {
 				if(level.getBlockEntity(connectionBack) instanceof PhysicsBogeyBlockEntity other) {
 					SubLevel selfSubLevel = Sable.HELPER.getContaining(this);
 					SubLevel otherSubLevel = Sable.HELPER.getContaining(other);
@@ -689,11 +726,33 @@ public class PhysicsBogeyBlockEntity extends KineticBlockEntity implements Namea
 	@Override
 	public void sable$physicsTick(ServerSubLevel subLevel, RigidBodyHandle handle, double timeStep) {
 		init();
-		if(pivot.isRemoved()) {
+		// Sub-level NaN recovery (sable's SubLevelPhysicsSystem.recoverSubLevel) rebuilds the
+		// sub-level's rapier body without removing the pivot, killing the rapier-side pivot/motor
+		// joints while pivot.isRemoved() stays false — recreate dead joints instead of mutating them
+		if(pivot.isRemoved() || pivotJoint == null || !pivotJoint.isValid() || motorJoint == null || !motorJoint.isValid()) {
 			createPivot(subLevel);
 		}
 		pivot.updatePose();
 		pivotPose.set(pivot.getPose());
+		// The pivot is an arbitrary physics object: sub-level NaN recovery never rebuilds it, so a
+		// NaN pivot pose would persist forever and re-poison the sub-level through the pivot/track
+		// joints every tick. Rebuild the pivot at the bogey's logical anchor instead.
+		if(!isFinite(pivotPose)) {
+			if(!nanPivotLogged) {
+				nanPivotLogged = true;
+				Simurail.LOGGER.warn("Physics bogey at {} in {} read back a non-finite pivot pose {}, rebuilding the pivot body",
+						getBlockPos(), subLevel, pivotPose);
+			}
+			// A poisoned save can carry NaN offsets; the anchor math below must start finite
+			if(!isFinite(localPivotOffset)) {
+				localPivotOffset.zero();
+			}
+			if(!isFinite(localPivotRot)) {
+				localPivotRot.identity();
+			}
+			resetPivotPose();
+			recreatePivot(subLevel);
+		}
 		subLevel.logicalPose().transformPositionInverse(pivotPose.position(), localPivotOffset).sub(localCenter);
 		subLevel.logicalPose().orientation().conjugate(localPivotRot).mul(pivotPose.orientation());
 
@@ -838,7 +897,13 @@ public class PhysicsBogeyBlockEntity extends KineticBlockEntity implements Namea
 	}
 
 	public float getControlStrength() {
-		return Math.clamp((isInverted() ? level.getSignal(getBlockPos().below(), Direction.DOWN) : level.getSignal(getBlockPos().above(), Direction.UP)) / 15F, 0, 1);
+		return Math.clamp((isInverted() ? getSignalSafe(getBlockPos().below(), Direction.DOWN) : getSignalSafe(getBlockPos().above(), Direction.UP)) / 15F, 0, 1);
+	}
+
+	// Reads a redstone signal without ever triggering a chunk load; an unloaded chunk reads as 0.
+	// The ±1 box covers the conductor fan-out of SignalGetter.getSignal (conductors read all six neighbours)
+	protected int getSignalSafe(BlockPos pos, Direction direction) {
+		return ChunkAvailability.areChunksLoaded(level, pos.getX() - 1, pos.getZ() - 1, pos.getX() + 1, pos.getZ() + 1) ? level.getSignal(pos, direction) : 0;
 	}
 
 	public float getBrakeStrength() {
@@ -884,10 +949,10 @@ public class PhysicsBogeyBlockEntity extends KineticBlockEntity implements Namea
 			return computerOverrides.getSteerValue();
 		}
 		int value = switch(getFacing()) {
-		case EAST -> level.getSignal(getBlockPos().south(), Direction.SOUTH) - level.getSignal(getBlockPos().north(), Direction.NORTH);
-		case WEST -> level.getSignal(getBlockPos().north(), Direction.NORTH) - level.getSignal(getBlockPos().south(), Direction.SOUTH);
-		case SOUTH -> level.getSignal(getBlockPos().west(), Direction.WEST) - level.getSignal(getBlockPos().east(), Direction.EAST);
-		case NORTH -> level.getSignal(getBlockPos().east(), Direction.EAST) - level.getSignal(getBlockPos().west(), Direction.WEST);
+		case EAST -> getSignalSafe(getBlockPos().south(), Direction.SOUTH) - getSignalSafe(getBlockPos().north(), Direction.NORTH);
+		case WEST -> getSignalSafe(getBlockPos().north(), Direction.NORTH) - getSignalSafe(getBlockPos().south(), Direction.SOUTH);
+		case SOUTH -> getSignalSafe(getBlockPos().west(), Direction.WEST) - getSignalSafe(getBlockPos().east(), Direction.EAST);
+		case NORTH -> getSignalSafe(getBlockPos().east(), Direction.EAST) - getSignalSafe(getBlockPos().west(), Direction.WEST);
 		case null, default -> throw new IllegalArgumentException("Unexpected value: " + getFacing());
 		};
 		if(value == 0) {

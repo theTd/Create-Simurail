@@ -8,6 +8,7 @@ import java.util.UUID;
 import org.joml.Vector3d;
 
 import com.crystaelix.simurail.api.math.SimurailMath;
+import com.crystaelix.simurail.api.util.ChunkAvailability;
 import com.crystaelix.simurail.api.util.SchematicContextUtil;
 import com.crystaelix.simurail.content.SimurailBlocks;
 import com.crystaelix.simurail.content.SimurailSoundEvents;
@@ -160,7 +161,8 @@ public class GangwayFrameBlockEntity extends SmartBlockEntity implements MenuPro
 
 	@Override
 	public GangwayFrame getGangwayPartner() {
-		if(gangwayPartnerPos != null && level.getBlockEntity(gangwayPartnerPos) instanceof GangwayFrame partner) {
+		// Never block a tick on a chunk load: an unloaded partner chunk reads as "no partner this tick"
+		if(gangwayPartnerPos != null && ChunkAvailability.isChunkLoaded(level, gangwayPartnerPos) && level.getBlockEntity(gangwayPartnerPos) instanceof GangwayFrame partner) {
 			return partner;
 		}
 		return null;
@@ -238,7 +240,8 @@ public class GangwayFrameBlockEntity extends SmartBlockEntity implements MenuPro
 	public void lazyTick() {
 		if(!level.isClientSide()) {
 			double maxDist = 6;
-			if(gangwayPartnerPos != null) {
+			// An unloaded partner chunk is unverifiable, not broken: keep the partner and recheck later
+			if(gangwayPartnerPos != null && ChunkAvailability.isChunkLoaded(level, gangwayPartnerPos)) {
 				if(level.getBlockEntity(gangwayPartnerPos) instanceof GangwayFrame partner) {
 					SubLevel selfSubLevel = Sable.HELPER.getContaining(this);
 					SubLevel otherSubLevel = Sable.HELPER.getContaining(level, gangwayPartnerPos);
@@ -279,13 +282,15 @@ public class GangwayFrameBlockEntity extends SmartBlockEntity implements MenuPro
 					Direction partnerOffset = partnerShape.adjacentOffset(cPartner.getFacing(), !cw);
 					BlockPos selfPos = cSelf.getBlockPos().relative(selfOffset);
 					BlockPos partnerPos = cPartner.getBlockPos().relative(partnerOffset);
-					if(level.getBlockEntity(selfPos) instanceof GangwayFrame selfNeighbor &&
+					if(ChunkAvailability.isChunkLoaded(level, selfPos) &&
+							level.getBlockEntity(selfPos) instanceof GangwayFrame selfNeighbor &&
 							!visited.contains(selfNeighbor) &&
 							cSelf.getFacing() == selfNeighbor.getFacing()) {
 						GangwayFrameShape neighborShape = selfNeighbor.getGangwayShape();
 						int selfAdj = selfShape.adjacentTo(neighborShape, cw);
 						int neighborAdj = neighborShape.adjacentTo(selfShape, !cw);
 						if((selfAdj != 0 || neighborAdj != 0) &&
+								ChunkAvailability.isChunkLoaded(level, partnerPos) &&
 								level.getBlockEntity(partnerPos) instanceof GangwayFrame partnerNeighbor &&
 								cPartner.getFacing() == partnerNeighbor.getFacing() &&
 								neighborShape.connectsTo().equals(partnerNeighbor.getGangwayShape())) {

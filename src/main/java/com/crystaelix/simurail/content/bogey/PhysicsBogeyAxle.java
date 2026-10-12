@@ -23,6 +23,7 @@ import com.crystaelix.simurail.api.physics.AttachableBoxPhysicsObject;
 import com.crystaelix.simurail.api.physics.SimurailJoints;
 import com.crystaelix.simurail.api.track.TrackTypeEntries;
 import com.crystaelix.simurail.api.track.TrackTypeEntry;
+import com.crystaelix.simurail.api.util.ChunkAvailability;
 import com.crystaelix.simurail.config.SimurailConfig;
 import com.crystaelix.simurail.config.SimurailPhysicsConfig;
 import com.crystaelix.simurail.content.SimurailForceGroups;
@@ -246,7 +247,12 @@ public class PhysicsBogeyAxle {
 									probeData.stationId = station.id;
 									probeData.stationPos = edge.getPosition(trackGraph, station.getLocationOn(edge) / edge.getLength());
 									probeData.stationBlockPos = station.blockEntityPos;
-									probeData.stationPowered = bogey.getLevel().hasNeighborSignal(station.blockEntityPos);
+									// hasNeighborSignal fans out up to two blocks via conductor neighbours; treat an unloaded station chunk as unpowered
+									Level stationLevel = bogey.getLevel();
+									probeData.stationPowered = ChunkAvailability.areChunksLoaded(stationLevel,
+											station.blockEntityPos.getX() - 2, station.blockEntityPos.getZ() - 2,
+											station.blockEntityPos.getX() + 2, station.blockEntityPos.getZ() + 2) &&
+											stationLevel.hasNeighborSignal(station.blockEntityPos);
 								}
 							}
 							case SignalBoundary signal -> {
@@ -296,6 +302,10 @@ public class PhysicsBogeyAxle {
 		return signalBlocks.stream().
 				flatMap(pos -> Direction.stream().flatMap(dir -> {
 					BlockPos relative = pos.relative(dir);
+					// Sign reads must not pull in an unloaded chunk on the tick path
+					if(!ChunkAvailability.isChunkLoaded(level, relative)) {
+						return Stream.of();
+					}
 					BlockState state = level.getBlockState(relative);
 					if(dir == Direction.UP) {
 						if(state.getBlock() instanceof StandingSignBlock) {
@@ -814,7 +824,8 @@ public class PhysicsBogeyAxle {
 		double targetSpeedFactor = config.axleTargetSpeedFactor.get();
 		targetSpeed = bogey.getSpeed() * targetSpeedFactor * bogey.getFacing().getAxisDirection().getStep() * bogey.getStressSign();
 
-		if(clipResult.getType() != HitResult.Type.BLOCK) {
+		if(clipResult.getType() != HitResult.Type.BLOCK || !ChunkAvailability.isChunkLoaded(level, clipResult.getBlockPos())) {
+			// No ground contact (or its chunk not loaded): no ground forces this tick
 			if(targetSpeed != 0) {
 				visualSpeed = targetSpeed;
 			}
@@ -891,6 +902,14 @@ public class PhysicsBogeyAxle {
 		ServerLevel level = subLevel.getLevel();
 		Vec3 clipStart = bogey.pivotPose.transformPosition(new Vec3(axleFrame.position.x, axleFrame.position.y + 0.5, axleFrame.position.z));
 		Vec3 clipEnd = JOMLConversion.toMojang(globalAxleFrame.position);
+		// Never block the physics tick on a chunk load: if the ray touches a chunk that is
+		// not already loaded, report a miss (same as hitting nothing) and retry next tick
+		if(!ChunkAvailability.areChunksLoaded(level,
+				Mth.floor(Math.min(clipStart.x, clipEnd.x)), Mth.floor(Math.min(clipStart.z, clipEnd.z)),
+				Mth.floor(Math.max(clipStart.x, clipEnd.x)), Mth.floor(Math.max(clipStart.z, clipEnd.z)))) {
+			Vec3 clipDelta = clipEnd.subtract(clipStart);
+			return BlockHitResult.miss(clipEnd, Direction.getNearest(clipDelta.x, clipDelta.y, clipDelta.z), BlockPos.containing(clipEnd));
+		}
 		ClipContext clipContext = new ClipContext(clipStart, clipEnd, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, CollisionContext.empty());
 		((ClipContextExtension)clipContext).sable$setIgnoredSubLevel(subLevel);
 		return level.clip(clipContext);

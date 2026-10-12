@@ -11,6 +11,7 @@ import org.joml.Vector3dc;
 
 import com.crystaelix.simurail.api.math.SimurailMath;
 import com.crystaelix.simurail.api.track.TrackTypeOverrides;
+import com.crystaelix.simurail.api.util.ChunkAvailability;
 import com.crystaelix.simurail.api.util.SubLevelUtil;
 import com.simibubi.create.content.trains.graph.TrackEdge;
 import com.simibubi.create.content.trains.graph.TrackGraphHelper;
@@ -90,9 +91,18 @@ public class TrackSegmentHelper {
 			checkPose.transformPositionInverse(globalPos, checkLocalPos);
 			checkPose.transformNormalInverse(globalDir, checkLocalDir);
 			checkPose.transformNormalInverse(globalVert, checkLocalVert);
-			for(int x = Mth.floor(checkLocalPos.x) - 1; x < Mth.ceil(checkLocalPos.x) + 1; ++x) {
+			int minX = Mth.floor(checkLocalPos.x) - 1;
+			int maxX = Mth.ceil(checkLocalPos.x);
+			int minZ = Mth.floor(checkLocalPos.z) - 1;
+			int maxZ = Mth.ceil(checkLocalPos.z);
+			// Never block the physics tick on a chunk load: skip this sublevel's scan when
+			// any chunk under the scan box is not already loaded
+			if(!ChunkAvailability.areChunksLoaded(level, minX, minZ, maxX, maxZ)) {
+				continue;
+			}
+			for(int x = minX; x <= maxX; ++x) {
 				for(int y = Mth.floor(checkLocalPos.y) - 2; y < Mth.ceil(checkLocalPos.y) + 2; ++y) {
-					for(int z = Mth.floor(checkLocalPos.z) - 1; z < Mth.ceil(checkLocalPos.z) + 1; ++z) {
+					for(int z = minZ; z <= maxZ; ++z) {
 						checkPos.set(x, y, z);
 						BlockState checkState = level.getBlockState(checkPos);
 						if(checkState.getBlock() instanceof ITrackBlock checkBlock) {

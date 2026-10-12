@@ -22,6 +22,9 @@ import com.simibubi.create.foundation.data.CreateRegistrate;
 import com.simibubi.create.foundation.item.ItemDescription;
 import com.tterrag.registrate.util.nullness.NonNullSupplier;
 
+import com.mojang.logging.LogUtils;
+import org.slf4j.Logger;
+
 import dev.simulated_team.simulated.registrate.SimulatedRegistrate;
 import net.createmod.catnip.config.ConfigBase;
 import net.createmod.catnip.lang.FontHelper;
@@ -40,6 +43,7 @@ import net.neoforged.neoforge.capabilities.RegisterCapabilitiesEvent;
 public class Simurail {
 
 	public static final String MOD_ID = "simurail";
+	public static final Logger LOGGER = LogUtils.getLogger();
 	private static final NonNullSupplier<CreateRegistrate> REGISTRATE = NonNullSupplier.
 			lazy(() -> (SimulatedRegistrate)
 					new SimulatedRegistrate(id(MOD_ID), MOD_ID).

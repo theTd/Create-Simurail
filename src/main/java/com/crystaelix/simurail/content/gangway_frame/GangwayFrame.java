@@ -8,6 +8,7 @@ import org.joml.Vector3d;
 import org.joml.Vector3dc;
 
 import com.crystaelix.simurail.api.math.SimurailMath;
+import com.crystaelix.simurail.api.util.ChunkAvailability;
 import com.crystaelix.simurail.api.util.SubLevelUtil;
 
 import dev.ryanhcode.sable.Sable;
@@ -69,7 +70,8 @@ public interface GangwayFrame {
 					GangwayFrameShape shape = curr.getGangwayShape();
 					Direction offset = shape.adjacentOffset(curr.getFacing(), cw);
 					BlockPos pos = curr.getBlockPos().relative(offset);
-					if(level.getBlockEntity(pos) instanceof GangwayFrame neighbor &&
+					// Never block a tick on a chunk load: an unloaded position simply ends the walk
+					if(ChunkAvailability.isChunkLoaded(level, pos) && level.getBlockEntity(pos) instanceof GangwayFrame neighbor &&
 							!neighbors.contains(neighbor) &&
 							curr.getFacing() == neighbor.getFacing()) {
 						GangwayFrameShape neighborShape = neighbor.getGangwayShape();
@@ -121,9 +123,18 @@ public interface GangwayFrame {
 			checkPose.transformPositionInverse(globalStartPos, checkStartPos);
 			checkPose.transformNormalInverse(globalSelfDir, checkSelfDir);
 			checkPose.transformPositionInverse(globalSelfCenter, checkSelfCenter);
-			for(int x = Mth.floor(checkStartPos.x) - 2; x < Mth.ceil(checkStartPos.x) + 2; ++x) {
+			int minX = Mth.floor(checkStartPos.x) - 2;
+			int maxX = Mth.ceil(checkStartPos.x) + 1;
+			int minZ = Mth.floor(checkStartPos.z) - 2;
+			int maxZ = Mth.ceil(checkStartPos.z) + 1;
+			// Never block a tick on a chunk load: skip this sublevel's scan when
+			// any chunk under the scan box is not already loaded
+			if(!ChunkAvailability.areChunksLoaded(level, minX, minZ, maxX, maxZ)) {
+				continue;
+			}
+			for(int x = minX; x <= maxX; ++x) {
 				for(int y = Mth.floor(checkStartPos.y) - 2; y < Mth.ceil(checkStartPos.y) + 2; ++y) {
-					for(int z = Mth.floor(checkStartPos.z) - 2; z < Mth.ceil(checkStartPos.z) + 2; ++z) {
+					for(int z = minZ; z <= maxZ; ++z) {
 						checkPos.set(x, y, z);
 						if(level.getBlockEntity(checkPos) instanceof GangwayFrame checkPartner &&
 								checkPartner != self &&
