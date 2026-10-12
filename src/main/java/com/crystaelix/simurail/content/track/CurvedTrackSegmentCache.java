@@ -9,6 +9,7 @@ import org.joml.Vector3dc;
 import com.crystaelix.simurail.api.math.BezierControlPoints;
 import com.crystaelix.simurail.api.math.SimurailMath;
 import com.crystaelix.simurail.api.track.TrackTypeOverrides;
+import com.crystaelix.simurail.api.util.ChunkAvailability;
 import com.crystaelix.simurail.api.util.SubLevelUtil;
 import com.google.common.collect.Multimaps;
 import com.google.common.collect.SetMultimap;
@@ -161,6 +162,12 @@ public class CurvedTrackSegmentCache {
 			return null;
 		}
 		BezierConnection curve = segment.curve();
+		// Never block the physics tick on a chunk load: an unverifiable curve is skipped
+		// this tick but stays cached, unlike a genuinely broken one
+		if(!ChunkAvailability.isChunkLoaded(level, curve.bePositions.getFirst()) ||
+				!ChunkAvailability.isChunkLoaded(level, curve.bePositions.getSecond())) {
+			return null;
+		}
 		if(!(level.getBlockState(curve.bePositions.getFirst()).getBlock() instanceof ITrackBlock) ||
 				!(level.getBlockState(curve.bePositions.getSecond()).getBlock() instanceof ITrackBlock)) {
 			// Broken curve, notify

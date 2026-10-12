@@ -16,7 +16,9 @@ import com.crystaelix.simurail.api.math.MovingVector3fLerp;
 import com.crystaelix.simurail.api.math.SimurailMath;
 import com.crystaelix.simurail.api.physics.AttachableBoxPhysicsObject;
 import com.crystaelix.simurail.api.physics.SimurailJoints;
+import com.crystaelix.simurail.api.util.ChunkAvailability;
 import com.crystaelix.simurail.api.util.SchematicContextUtil;
+import com.crystaelix.simurail.Simurail;
 import com.crystaelix.simurail.compat.SimurailCompat;
 import com.crystaelix.simurail.compat.computercraft.SimurailComputerCraftProxy;
 import com.crystaelix.simurail.config.SimurailConfig;
@@ -39,6 +41,7 @@ import dev.ryanhcode.sable.api.physics.mass.MassData;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.companion.math.JOMLConversion;
 import dev.ryanhcode.sable.companion.math.Pose3d;
+import dev.ryanhcode.sable.companion.math.Pose3dc;
 import dev.ryanhcode.sable.sublevel.ServerSubLevel;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem;
@@ -105,6 +108,7 @@ public class PhysicsBogeyBlockEntity extends KineticBlockEntity implements Namea
 	protected final PhysicsBogeyAxle axleBack;
 	protected double visualSpeed = 0;
 	protected double lastVisualSpeed = 0;
+	protected boolean nanPivotLogged = false;
 
 	// Client rendering components
 	protected final MovingQuaternionfLerp renderPivotRot = MovingQuaternionfLerp.of(2);
@@ -253,14 +257,14 @@ public class PhysicsBogeyBlockEntity extends KineticBlockEntity implements Namea
 	@Override
 	public void disconnectSteering(boolean front) {
 		if(front) {
-			if(connectionFront != null && level.getBlockEntity(connectionFront) instanceof PhysicsBogeyBlockEntity otherBogey) {
+			if(connectionFront != null && ChunkAvailability.isChunkLoaded(level, connectionFront) && level.getBlockEntity(connectionFront) instanceof PhysicsBogeyBlockEntity otherBogey) {
 				otherBogey.propagateDisconnectSteering(connectionFrontToFront);
 			}
 			connectionFront = null;
 			connectionFrontSubLevelID = null;
 		}
 		else {
-			if(connectionBack != null && level.getBlockEntity(connectionBack) instanceof PhysicsBogeyBlockEntity otherBogey) {
+			if(connectionBack != null && ChunkAvailability.isChunkLoaded(level, connectionBack) && level.getBlockEntity(connectionBack) instanceof PhysicsBogeyBlockEntity otherBogey) {
 				otherBogey.propagateDisconnectSteering(connectionBackToFront);
 			}
 			connectionBack = null;
@@ -290,10 +294,10 @@ public class PhysicsBogeyBlockEntity extends KineticBlockEntity implements Namea
 	}
 
 	public void afterMove() {
-		if(connectionFront != null && level.getBlockEntity(connectionFront) instanceof PhysicsBogeyBlockEntity otherBogey) {
+		if(connectionFront != null && ChunkAvailability.isChunkLoaded(level, connectionFront) && level.getBlockEntity(connectionFront) instanceof PhysicsBogeyBlockEntity otherBogey) {
 			connectSteering(true, otherBogey, connectionFrontToFront);
 		}
-		if(connectionBack != null && level.getBlockEntity(connectionBack) instanceof PhysicsBogeyBlockEntity otherBogey) {
+		if(connectionBack != null && ChunkAvailability.isChunkLoaded(level, connectionBack) && level.getBlockEntity(connectionBack) instanceof PhysicsBogeyBlockEntity otherBogey) {
 			connectSteering(false, otherBogey, connectionBackToFront);
 		}
 	}
@@ -338,12 +342,12 @@ public class PhysicsBogeyBlockEntity extends KineticBlockEntity implements Namea
 
 	public PhysicsBogeyBlockEntity getConnected(boolean front) {
 		if(front) {
-			if(connectionFront != null && level.getBlockEntity(connectionFront) instanceof PhysicsBogeyBlockEntity other) {
+			if(connectionFront != null && ChunkAvailability.isChunkLoaded(level, connectionFront) && level.getBlockEntity(connectionFront) instanceof PhysicsBogeyBlockEntity other) {
 				return other;
 			}
 		}
 		else {
-			if(connectionBack != null && level.getBlockEntity(connectionBack) instanceof PhysicsBogeyBlockEntity other) {
+			if(connectionBack != null && ChunkAvailability.isChunkLoaded(level, connectionBack) && level.getBlockEntity(connectionBack) instanceof PhysicsBogeyBlockEntity other) {
 				return other;
 			}
 		}
@@ -470,7 +474,8 @@ public class PhysicsBogeyBlockEntity extends KineticBlockEntity implements Namea
 			}
 
 			double maxDist = SimurailConfig.SERVER.blocks.bogeyConnectionRangeDifferent.get();
-			if(connectionFront != null) {
+			// An unloaded connection chunk is unverifiable, not broken: keep the connection and recheck later
+			if(connectionFront != null && ChunkAvailability.isChunkLoaded(level, connectionFront)) {
 				if(level.getBlockEntity(connectionFront) instanceof PhysicsBogeyBlockEntity other) {
 					SubLevel selfSubLevel = Sable.HELPER.getContaining(this);
 					SubLevel otherSubLevel = Sable.HELPER.getContaining(other);
@@ -485,7 +490,7 @@ public class PhysicsBogeyBlockEntity extends KineticBlockEntity implements Namea
 					disconnectSteering(true);
 				}
 			}
-			if(connectionBack != null) {
+			if(connectionBack != null && ChunkAvailability.isChunkLoaded(level, connectionBack)) {
 				if(level.getBlockEntity(connectionBack) instanceof PhysicsBogeyBlockEntity other) {
 					SubLevel selfSubLevel = Sable.HELPER.getContaining(this);
 					SubLevel otherSubLevel = Sable.HELPER.getContaining(other);
@@ -503,14 +508,65 @@ public class PhysicsBogeyBlockEntity extends KineticBlockEntity implements Namea
 		}
 	}
 
+	// Rebuilds the pivot body and its joint without touching axle state; used when the pivot's
+	// rapier body went NaN (its old joints die with the removed body and are recreated by createPivot)
+	protected void recreatePivot(ServerSubLevel subLevel) {
+		axleFront.removeJoint();
+		axleBack.removeJoint();
+		if(pivotJoint != null) {
+			pivotJoint.remove();
+			pivotJoint = null;
+		}
+		if(pivot != null) {
+			SubLevelPhysicsSystem physics = SubLevelContainer.getContainer(subLevel.getLevel()).physicsSystem();
+			physics.removeObject(pivot);
+			pivot = null;
+		}
+		createPivot(subLevel);
+	}
+
+	protected static boolean isFinite(Pose3dc pose) {
+		return isFinite(pose.position()) && isFinite(pose.orientation());
+	}
+
+	protected static boolean isFinite(Vector3dc vec) {
+		return Double.isFinite(vec.x()) && Double.isFinite(vec.y()) && Double.isFinite(vec.z());
+	}
+
+	protected static boolean isFinite(Quaterniondc quat) {
+		return Double.isFinite(quat.x()) && Double.isFinite(quat.y()) && Double.isFinite(quat.z()) && Double.isFinite(quat.w());
+	}
+
 	@Override
 	public void sable$physicsTick(ServerSubLevel subLevel, RigidBodyHandle handle, double timeStep) {
 		init();
-		if(pivot.isRemoved()) {
+		// Sub-level NaN recovery (sable's SubLevelPhysicsSystem.recoverSubLevel) rebuilds the
+		// sub-level's rapier body without removing the pivot, killing the rapier-side pivot
+		// joint while pivot.isRemoved() stays false — recreate dead joints instead of mutating them
+		if(pivot.isRemoved() || pivotJoint == null || !pivotJoint.isValid()) {
 			createPivot(subLevel);
 		}
 		pivot.updatePose();
 		pivotPose.set(pivot.getPose());
+		// The pivot is an arbitrary physics object: sub-level NaN recovery never rebuilds it, so a
+		// NaN pivot pose would persist forever and re-poison the sub-level through the pivot/track
+		// joints every tick. Rebuild the pivot at the bogey's logical anchor instead.
+		if(!isFinite(pivotPose)) {
+			if(!nanPivotLogged) {
+				nanPivotLogged = true;
+				Simurail.LOGGER.warn("Physics bogey at {} in {} read back a non-finite pivot pose {}, rebuilding the pivot body",
+						getBlockPos(), subLevel, pivotPose);
+			}
+			// A poisoned save can carry NaN offsets; the anchor math below must start finite
+			if(!isFinite(localPivotOffset)) {
+				localPivotOffset.zero();
+			}
+			if(!isFinite(localPivotRot)) {
+				localPivotRot.set(getJointOrientation());
+			}
+			resetPivotPose();
+			recreatePivot(subLevel);
+		}
 		subLevel.logicalPose().transformPositionInverse(pivotPose.position(), localPivotOffset).sub(localCenter);
 		subLevel.logicalPose().orientation().conjugate(localPivotRot).mul(pivotPose.orientation());
 
@@ -703,7 +759,13 @@ public class PhysicsBogeyBlockEntity extends KineticBlockEntity implements Namea
 	private record ActiveBogeyCounts(int activeVertical, int activeLateral, int activeRoll) {}
 
 	public double getControlStrength() {
-		return Math.clamp((isInverted() ? level.getSignal(getBlockPos().below(), Direction.DOWN) : level.getSignal(getBlockPos().above(), Direction.UP)) / 15D, 0, 1);
+		return Math.clamp((isInverted() ? getSignalSafe(getBlockPos().below(), Direction.DOWN) : getSignalSafe(getBlockPos().above(), Direction.UP)) / 15D, 0, 1);
+	}
+
+	// Reads a redstone signal without ever triggering a chunk load; an unloaded chunk reads as 0.
+	// The ±1 box covers the conductor fan-out of SignalGetter.getSignal (conductors read all six neighbours)
+	protected int getSignalSafe(BlockPos pos, Direction direction) {
+		return ChunkAvailability.areChunksLoaded(level, pos.getX() - 1, pos.getZ() - 1, pos.getX() + 1, pos.getZ() + 1) ? level.getSignal(pos, direction) : 0;
 	}
 
 	public double getBrakeStrength() {
@@ -718,10 +780,10 @@ public class PhysicsBogeyBlockEntity extends KineticBlockEntity implements Namea
 	public double getSteerValue() {
 		// TODO maybe computer?
 		int value = switch(getFacing()) {
-		case EAST -> level.getSignal(getBlockPos().south(), Direction.SOUTH) - level.getSignal(getBlockPos().north(), Direction.NORTH);
-		case WEST -> level.getSignal(getBlockPos().north(), Direction.NORTH) - level.getSignal(getBlockPos().south(), Direction.SOUTH);
-		case SOUTH -> level.getSignal(getBlockPos().west(), Direction.WEST) - level.getSignal(getBlockPos().east(), Direction.EAST);
-		case NORTH -> level.getSignal(getBlockPos().east(), Direction.EAST) - level.getSignal(getBlockPos().west(), Direction.WEST);
+		case EAST -> getSignalSafe(getBlockPos().south(), Direction.SOUTH) - getSignalSafe(getBlockPos().north(), Direction.NORTH);
+		case WEST -> getSignalSafe(getBlockPos().north(), Direction.NORTH) - getSignalSafe(getBlockPos().south(), Direction.SOUTH);
+		case SOUTH -> getSignalSafe(getBlockPos().west(), Direction.WEST) - getSignalSafe(getBlockPos().east(), Direction.EAST);
+		case NORTH -> getSignalSafe(getBlockPos().east(), Direction.EAST) - getSignalSafe(getBlockPos().west(), Direction.WEST);
 		case null, default -> throw new IllegalArgumentException("Unexpected value: " + getFacing());
 		};
 		return Math.clamp(value / 15D, -1, 1);

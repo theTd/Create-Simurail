@@ -11,6 +11,7 @@ import com.crystaelix.simurail.api.coupler.CouplerType;
 import com.crystaelix.simurail.api.coupler.CouplerTypeRegistry;
 import com.crystaelix.simurail.api.math.SimurailMath;
 import com.crystaelix.simurail.api.physics.SimurailJoints;
+import com.crystaelix.simurail.api.util.ChunkAvailability;
 import com.crystaelix.simurail.api.util.SchematicContextUtil;
 import com.crystaelix.simurail.api.util.SubLevelUtil;
 import com.crystaelix.simurail.config.SimurailConfig;
@@ -260,7 +261,8 @@ public class AutomaticCouplerBlockEntity extends SmartBlockEntity implements Blo
 	@Override
 	public void lazyTick() {
 		if(!level.isClientSide()) {
-			if(connectedPos != null) {
+			// Unloaded chunks are unverifiable, not broken: keep the links and recheck next lazy tick
+			if(connectedPos != null && ChunkAvailability.isChunkLoaded(level, connectedPos)) {
 				SubLevel selfSubLevel = Sable.HELPER.getContaining(this);
 				SubLevel otherSubLevel = Sable.HELPER.getContaining(level, connectedPos);
 				BlockEntity be = level.getBlockEntity(connectedPos);
@@ -268,8 +270,8 @@ public class AutomaticCouplerBlockEntity extends SmartBlockEntity implements Blo
 					disconnectSteering(false);
 				}
 				else if(be instanceof PhysicsBogeyBlockEntity bogey) {
-					if(partnerPos != null && level.getBlockEntity(partnerPos) instanceof AutomaticCouplerBlockEntity partner) {
-						if(partner.connectedPos != null && level.getBlockEntity(partner.connectedPos) instanceof PhysicsBogeyBlockEntity otherBogey) {
+					if(partnerPos != null && ChunkAvailability.isChunkLoaded(level, partnerPos) && level.getBlockEntity(partnerPos) instanceof AutomaticCouplerBlockEntity partner) {
+						if(partner.connectedPos != null && ChunkAvailability.isChunkLoaded(level, partner.connectedPos) && level.getBlockEntity(partner.connectedPos) instanceof PhysicsBogeyBlockEntity otherBogey) {
 							bogey.connectSteering(connectedFront, otherBogey, partner.connectedFront);
 						}
 					}
@@ -278,7 +280,7 @@ public class AutomaticCouplerBlockEntity extends SmartBlockEntity implements Blo
 					disconnectSteering(false);
 				}
 			}
-			if(partnerPos != null && !(level.getBlockEntity(partnerPos) instanceof AutomaticCouplerBlockEntity)) {
+			if(partnerPos != null && ChunkAvailability.isChunkLoaded(level, partnerPos) && !(level.getBlockEntity(partnerPos) instanceof AutomaticCouplerBlockEntity)) {
 				removePartner();
 			}
 		}
@@ -296,6 +298,11 @@ public class AutomaticCouplerBlockEntity extends SmartBlockEntity implements Blo
 			findPartner(subLevel);
 		}
 		if(partnerPos != null) {
+			// Never block the physics tick on a chunk load: an unloaded partner chunk is
+			// unverifiable, not missing — keep the partner and recheck next tick
+			if(!ChunkAvailability.isChunkLoaded(level, partnerPos)) {
+				return;
+			}
 			if(level.getBlockEntity(partnerPos) instanceof AutomaticCouplerBlockEntity partner) {
 				ServerSubLevel partnerSubLevel = (ServerSubLevel)Sable.HELPER.getContaining(partner);
 				if(partnerSubLevel == subLevel ||
@@ -375,9 +382,18 @@ public class AutomaticCouplerBlockEntity extends SmartBlockEntity implements Blo
 			}
 			Pose3dc checkPose = checkSubLevel == null ? SimurailMath.POSE_I : checkSubLevel.logicalPose();
 			checkPose.transformPositionInverse(globalEndPos, checkSelfEndPos);
-			for(int x = Mth.floor(checkSelfEndPos.x) - 2; x < Mth.ceil(checkSelfEndPos.x) + 2; ++x) {
+			int minX = Mth.floor(checkSelfEndPos.x) - 2;
+			int maxX = Mth.ceil(checkSelfEndPos.x) + 1;
+			int minZ = Mth.floor(checkSelfEndPos.z) - 2;
+			int maxZ = Mth.ceil(checkSelfEndPos.z) + 1;
+			// Never block the physics tick on a chunk load: skip this sublevel's scan when
+			// any chunk under the scan box is not already loaded
+			if(!ChunkAvailability.areChunksLoaded(level, minX, minZ, maxX, maxZ)) {
+				continue;
+			}
+			for(int x = minX; x <= maxX; ++x) {
 				for(int y = Mth.floor(checkSelfEndPos.y) - 2; y < Mth.ceil(checkSelfEndPos.y) + 2; ++y) {
-					for(int z = Mth.floor(checkSelfEndPos.z) - 2; z < Mth.ceil(checkSelfEndPos.z) + 2; ++z) {
+					for(int z = minZ; z <= maxZ; ++z) {
 						checkPos.set(x, y, z);
 						if(level.getBlockEntity(checkPos) instanceof AutomaticCouplerBlockEntity checkPartner &&
 								checkPartner.partnerPos == null &&

@@ -18,6 +18,7 @@ import com.crystaelix.simurail.api.physics.AttachableBoxPhysicsObject;
 import com.crystaelix.simurail.api.physics.SimurailJoints;
 import com.crystaelix.simurail.api.track.TrackTypeEntries;
 import com.crystaelix.simurail.api.track.TrackTypeEntry;
+import com.crystaelix.simurail.api.util.ChunkAvailability;
 import com.crystaelix.simurail.config.SimurailConfig;
 import com.crystaelix.simurail.config.SimurailPhysicsConfig;
 import com.crystaelix.simurail.content.track.CurvedTrackSegment;
@@ -509,6 +510,13 @@ public class PhysicsBogeyAxle {
 		ServerLevel level = subLevel.getLevel();
 		Vec3 clipStart = bogey.pivotPose.transformPosition(new Vec3(axleFrame.position.x, axleFrame.position.y + 0.5, axleFrame.position.z));
 		Vec3 clipEnd = JOMLConversion.toMojang(globalAxleFrame.position);
+		// Never block the physics tick on a chunk load: if the ray touches a chunk that is
+		// not already loaded, treat it as no ground contact (same as hitting nothing) and retry next tick
+		if(!ChunkAvailability.areChunksLoaded(level,
+				Mth.floor(Math.min(clipStart.x, clipEnd.x)), Mth.floor(Math.min(clipStart.z, clipEnd.z)),
+				Mth.floor(Math.max(clipStart.x, clipEnd.x)), Mth.floor(Math.max(clipStart.z, clipEnd.z)))) {
+			return;
+		}
 		ClipContext clipContext = new ClipContext(clipStart, clipEnd, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, CollisionContext.empty());
 		((ClipContextExtension)clipContext).sable$setIgnoredSubLevel(subLevel);
 		BlockHitResult clipResult = level.clip(clipContext);
